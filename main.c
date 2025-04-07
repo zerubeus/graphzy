@@ -5,15 +5,14 @@
 #include <raylib.h> // Include Raylib header
 #include <time.h>   // For seeding random number generator
 
-#define mass 8.0f       // Increased mass for more stability
-#define stiffness 30.0f   // Slightly reduced stiffness for less oscillation
-#define DeltaT 0.016f    // Reduced time step for better stability
-#define rest_length 120.0f     // Keep rest length the same
-#define damping 0.85f    // Increased damping significantly to reduce perpetual motion
-#define repulsion_k 500000.0f // Keep repulsion strength the same
-#define separation_stiffness 25000.0f // Keep separation stiffness the same
+#define mass 5.0f        // Much lighter for faster movement
+#define stiffness 40.0f   // Stronger springs for more responsive motion
+#define DeltaT 0.025f     // Larger time step for faster simulation
+#define rest_length 100.0f // Shorter rest length for tighter grouping
+#define damping 0.95f     // Less damping to allow more oscillation
+#define repulsion_k 300000.0f // Reduced repulsion for better spring effects
+#define separation_stiffness 15000.0f // Adjusted separation force
 #define node_radius 10.0f      // Visual radius of nodes
-#define stabilization_threshold 0.1f // Threshold for velocity to consider node "stable"
 
 // Window dimensions (can be const int or defines)
 const int screenWidth = 800;
@@ -107,15 +106,6 @@ void InitGraph(Node *nodes, const size_t num_nodes, Link *links, size_t *num_lin
 
 // Main physics simulation step using Velocity Verlet integration
 void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, const size_t num_links) {
-    static float simulation_time = 0.0f;  // Track simulation time
-    static float cooling_factor = 1.0f;   // Start with no additional cooling
-    
-    // Increase cooling effect (stronger damping) as simulation progresses
-    simulation_time += DeltaT;
-    if (simulation_time > 5.0f) {  // After 5 seconds, start additional cooling
-        cooling_factor = 0.98f + 0.02f * expf(-0.05f * (simulation_time - 5.0f));
-    }
-    
     float dist, dist_sq, inv_dist;
     float deltaX, deltaY;
     float Fspring, Frepulsion;
@@ -135,8 +125,6 @@ void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, co
         nodes[i].forcex = 0.0f;
         nodes[i].forcey = 0.0f;
     }
-
-    // --- Recalculate forces based on NEW positions --- //
 
     // --- Calculate Spring Forces ---
     for (size_t i = 0; i < num_links; i++) {
@@ -215,18 +203,9 @@ void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, co
         nodes[i].velx += 0.5f * (old_accX + new_accX) * DeltaT;
         nodes[i].vely += 0.5f * (old_accY + new_accY) * DeltaT;
 
-        // Apply progressive damping (gets stronger with time)
-        float effective_damping = damping * cooling_factor;
-        nodes[i].velx *= effective_damping;
-        nodes[i].vely *= effective_damping;
-        
-        // Additional velocity clamping for stability
-        float vel_sq = nodes[i].velx * nodes[i].velx + nodes[i].vely * nodes[i].vely;
-        if (vel_sq < stabilization_threshold * stabilization_threshold) {
-            // If velocity is very small, make it even smaller to help stabilization
-            nodes[i].velx *= 0.9f;
-            nodes[i].vely *= 0.9f;
-        }
+        // Simple constant damping - physical and natural
+        nodes[i].velx *= damping;
+        nodes[i].vely *= damping;
 
         // Store new acceleration for next frame's step 1
         nodes[i].accx = new_accX;
