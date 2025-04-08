@@ -10,9 +10,15 @@
 #define DeltaT 0.025f     // Larger time step for faster simulation
 #define rest_length 100.0f // Shorter rest length for tighter grouping
 #define damping 0.95f     // Less damping to allow more oscillation
-#define repulsion_k 300000.0f // Reduced repulsion for better spring effects
+#define repulsion_k 400000.0f // Increased repulsion for better node distribution
 #define separation_stiffness 15000.0f // Adjusted separation force
 #define node_radius 10.0f      // Visual radius of nodes
+
+// Annealing parameters
+#define initial_temperature 1.0f  // Starting temperature for annealing
+#define cooling_rate 0.995f       // How fast the temperature decreases
+#define min_temperature 0.01f     // Minimum temperature
+#define jiggle_force 150.0f       // Force for random perturbations
 
 // Window dimensions (can be const int or defines)
 const int screenWidth = 800;
@@ -106,12 +112,46 @@ void InitGraph(Node *nodes, const size_t num_nodes, Link *links, size_t *num_lin
 
 // Main physics simulation step using Velocity Verlet integration
 void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, const size_t num_links) {
+    static float temperature = initial_temperature;  // For simulated annealing
+    static int frame_count = 0;
+    static float energy_prev = 0.0f;
+    static int stable_frames = 0;
+    
+    // Update temperature (cool down system gradually)
+    if (temperature > min_temperature) {
+        temperature *= cooling_rate;
+    }
+    
+    frame_count++;
+    
     float dist, dist_sq, inv_dist;
     float deltaX, deltaY;
     float Fspring, Frepulsion;
     float forceX, forceY;
     float old_accX, old_accY;
-
+    
+    // Calculate current system energy
+    float total_energy = 0.0f;
+    for (size_t i = 0; i < num_nodes; i++) {
+        // Kinetic energy
+        float v_squared = nodes[i].velx * nodes[i].velx + nodes[i].vely * nodes[i].vely;
+        total_energy += 0.5f * mass * v_squared;
+    }
+    
+    // Check if we're stable or stuck in local minimum
+    float energy_delta = fabsf(total_energy - energy_prev);
+    energy_prev = total_energy;
+    
+    if (energy_delta < 0.1f) {
+        stable_frames++;
+    } else {
+        stable_frames = 0;
+    }
+    
+    // If we've been stable for a while but temperature is still high,
+    // apply random perturbations to escape local minima
+    bool apply_jiggle = (stable_frames > 30) && (temperature > min_temperature * 2.0f);
+    
     // --- Velocity Verlet Step 1: Update position based on current vel and acc ---
     for (size_t i = 0; i < num_nodes; i++) {
         old_accX = nodes[i].accx; // Store current acceleration
@@ -124,6 +164,14 @@ void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, co
         // Reset forces for recalculation at new position
         nodes[i].forcex = 0.0f;
         nodes[i].forcey = 0.0f;
+        
+        // Apply occasional random jiggle to escape local minima
+        if (apply_jiggle) {
+            float angle = ((float)rand() / RAND_MAX) * 6.28318f; // Random angle
+            float jiggle_magnitude = jiggle_force * temperature;
+            nodes[i].forcex += cosf(angle) * jiggle_magnitude;
+            nodes[i].forcey += sinf(angle) * jiggle_magnitude;
+        }
     }
 
     // --- Calculate Spring Forces ---
@@ -141,7 +189,9 @@ void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, co
              deltaY = (rand() % 2 == 0 ? 1.0f : -1.0f) * dist;
         } else { dist = sqrtf(dist_sq); }
 
-        Fspring = stiffness * (dist - rest_length);
+        // Use temperature to adjust spring stiffness
+        float adaptive_stiffness = stiffness * (1.0f + temperature * 0.5f);
+        Fspring = adaptive_stiffness * (dist - rest_length);
         inv_dist = 1.0f / dist;
         forceX = Fspring * deltaX * inv_dist;
         forceY = Fspring * deltaY * inv_dist;
@@ -168,6 +218,9 @@ void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, co
             float repulsion_factor = 1.0f;
             if (!AreNodesLinked(links, num_links, (unsigned int)i, (unsigned int)j)) {
                 repulsion_factor = 2.5f; // Much stronger repulsion between non-linked nodes
+                
+                // Scale with temperature for more exploration early on
+                repulsion_factor *= (1.0f + temperature);
             }
 
             if (dist < min_separation) {
@@ -194,6 +247,7 @@ void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, co
     }
 
     // --- Velocity Verlet Step 2 & 3: Update acceleration and velocity ---
+    float max_velocity = 0.0f;
     for (size_t i = 0; i < num_nodes; i++) {
         // Calculate NEW acceleration: a_new = F_new / m
         float new_accX = nodes[i].forcex / mass;
@@ -203,9 +257,16 @@ void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, co
         nodes[i].velx += 0.5f * (old_accX + new_accX) * DeltaT;
         nodes[i].vely += 0.5f * (old_accY + new_accY) * DeltaT;
 
-        // Simple constant damping - physical and natural
-        nodes[i].velx *= damping;
-        nodes[i].vely *= damping;
+        // Use temperature-dependent damping (less damping when hot)
+        float adaptive_damping = damping + (1.0f - damping) * (1.0f - temperature);
+        nodes[i].velx *= adaptive_damping;
+        nodes[i].vely *= adaptive_damping;
+        
+        // Track maximum velocity for detecting stability
+        float vel_sq = nodes[i].velx * nodes[i].velx + nodes[i].vely * nodes[i].vely;
+        if (vel_sq > max_velocity) {
+            max_velocity = vel_sq;
+        }
 
         // Store new acceleration for next frame's step 1
         nodes[i].accx = new_accX;
