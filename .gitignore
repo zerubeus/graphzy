@@ -1,2 +1,36 @@
-fenetre
-main.o
+# CMake build directories
+build/
+cmake-build-*/
+
+# Generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
+
+# Executable
+graphzy
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# IDE-specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Binary output
+bin/
+
+# macOS specific
+.DS_Store

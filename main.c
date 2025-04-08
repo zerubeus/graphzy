@@ -287,26 +287,32 @@ void RenderGraph(const Node *graph_nodes, const size_t num_nodes, const Link *li
     EndDrawing();
 }
 
-int main() {
+int main(int argc, char *argv[]) {
     FILE *fp = NULL;
     size_t num_nodes = 0;
     size_t num_links_alloc = 0;
     size_t num_links_actual = 0;
     char s[20];
+    char *filename = "file.txt"; // Default filename
+
+    // Check if a filename was provided as command-line argument
+    if (argc > 1) {
+        filename = argv[1];
+    }
 
     // Seed random number generator
     srand((unsigned int)time(NULL)); // Requires #include <time.h>
 
     // --- File Reading and Graph Initialization ---
-    fp = fopen("file.txt", "r");
+    fp = fopen(filename, "r");
     if (fp == NULL) {
-        perror("Error opening file.txt");
+        fprintf(stderr, "Error opening file: %s\n", filename);
         return EXIT_FAILURE;
     }
 
     // Read number of nodes directly into size_t using %zu
     if (fgets(s, sizeof(s), fp) == NULL || sscanf(s, "%zu", &num_nodes) != 1 || num_nodes == 0 || num_nodes > 10000) { // Use %zu and read directly into num_nodes
-        fprintf(stderr, "Error reading a valid number of nodes (1-10000) from file.txt\n");
+        fprintf(stderr, "Error reading a valid number of nodes (1-10000) from %s\n", filename);
         fclose(fp);
         return EXIT_FAILURE;
     }
@@ -318,7 +324,7 @@ int main() {
         }
     }
      if (num_links_alloc == 0) {
-        fprintf(stderr,"Warning: No link lines found in file.txt\n");
+        fprintf(stderr,"Warning: No link lines found in %s\n", filename);
      }
 
     rewind(fp);             // Go back to the beginning
@@ -358,7 +364,9 @@ int main() {
 
 
     // --- Raylib Setup ---
-    InitWindow(screenWidth, screenHeight, "Bouncing Graph - Raylib");
+    char window_title[100];
+    snprintf(window_title, sizeof(window_title), "Bouncing Graph - %s", filename);
+    InitWindow(screenWidth, screenHeight, window_title);
     SetTargetFPS(60); // Set desired frame rate
 
     // --- Main Loop ---
