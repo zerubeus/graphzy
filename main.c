@@ -9,16 +9,16 @@
 #define stiffness 40.0f   // Stronger springs for more responsive motion
 #define DeltaT 0.025f     // Larger time step for faster simulation
 #define rest_length 100.0f // Shorter rest length for tighter grouping
-#define damping 0.95f     // Less damping to allow more oscillation
+#define damping 0.85f     // More aggressive damping for faster stabilization
 #define repulsion_k 400000.0f // Increased repulsion for better node distribution
 #define separation_stiffness 15000.0f // Adjusted separation force
 #define node_radius 10.0f      // Visual radius of nodes
 
 // Annealing parameters
-#define initial_temperature 1.0f  // Starting temperature for annealing
-#define cooling_rate 0.995f       // How fast the temperature decreases
+#define initial_temperature 0.8f  // Lower starting temperature
+#define cooling_rate 0.98f       // Faster cooling rate
 #define min_temperature 0.01f     // Minimum temperature
-#define jiggle_force 150.0f       // Force for random perturbations
+#define jiggle_force 120.0f       // Reduced jiggle force for less perpetual motion
 
 // Window dimensions (can be const int or defines)
 const int screenWidth = 800;
@@ -119,7 +119,9 @@ void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, co
     
     // Update temperature (cool down system gradually)
     if (temperature > min_temperature) {
-        temperature *= cooling_rate;
+        // Accelerate cooling as the graph gets larger
+        float size_factor = num_nodes > 10 ? 0.99f : 1.0f;
+        temperature *= cooling_rate * size_factor;
     }
     
     frame_count++;
@@ -150,7 +152,12 @@ void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, co
     
     // If we've been stable for a while but temperature is still high,
     // apply random perturbations to escape local minima
-    bool apply_jiggle = (stable_frames > 30) && (temperature > min_temperature * 2.0f);
+    bool apply_jiggle = (stable_frames > 20) && (temperature > min_temperature * 2.0f);
+    
+    // Only jiggle if we're not in a low-energy state already
+    if (total_energy < 0.5f) {
+        apply_jiggle = false;
+    }
     
     // --- Velocity Verlet Step 1: Update position based on current vel and acc ---
     for (size_t i = 0; i < num_nodes; i++) {
@@ -259,8 +266,20 @@ void UpdateSimulation(Node *nodes, const size_t num_nodes, const Link *links, co
 
         // Use temperature-dependent damping (less damping when hot)
         float adaptive_damping = damping + (1.0f - damping) * (1.0f - temperature);
+        
+        // For large graphs, increase damping even more as temperature drops
+        if (num_nodes > 10 && temperature < 0.3f) {
+            adaptive_damping *= 0.97f;
+        }
+        
         nodes[i].velx *= adaptive_damping;
         nodes[i].vely *= adaptive_damping;
+        
+        // Apply extra strong damping when almost stable
+        if (temperature < 0.1f) {
+            nodes[i].velx *= 0.95f;
+            nodes[i].vely *= 0.95f;
+        }
         
         // Track maximum velocity for detecting stability
         float vel_sq = nodes[i].velx * nodes[i].velx + nodes[i].vely * nodes[i].vely;
