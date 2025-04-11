@@ -4,6 +4,8 @@
 #include <math.h>
 #include <raylib.h> // Include Raylib header
 #include <time.h>   // For seeding random number generator
+#include <ctype.h>  // For tolower function
+#include <stdbool.h> // For bool type
 
 #define mass 5.0f        // Much lighter for faster movement
 #define stiffness 40.0f   // Stronger springs for more responsive motion
@@ -20,6 +22,9 @@
 #define MAX_WORD_LENGTH 32
 #define EMBEDDING_DIM 10
 #define SIMILARITY_THRESHOLD 0.5f
+// Contextual embedding dictionary size
+#define DICTIONARY_SIZE 50
+#define CONTEXT_WINDOW 5  // For word co-occurrence analysis
 
 // Annealing parameters
 #define initial_temperature 0.8f  // Lower starting temperature
@@ -81,25 +86,186 @@ unsigned int hash_string(const char *str) {
     return hash;
 }
 
-// Generate a simple deterministic embedding for a word
-void generate_word_embedding(const char *word, float *embedding) {
-    unsigned int hash = hash_string(word);
+// Dictionary entry for semantic relationships
+typedef struct {
+    char word[MAX_WORD_LENGTH];
+    float embedding[EMBEDDING_DIM];
+    // Related words for king-queen type relationships
+    char related_words[3][MAX_WORD_LENGTH];
+    float relation_vectors[3][EMBEDDING_DIM];
+} DictionaryEntry;
+
+// Global dictionary with predefined semantic relationships
+DictionaryEntry semantic_dictionary[DICTIONARY_SIZE] = {0};
+
+// Initialize the semantic dictionary with common words and their relationships
+void initialize_semantic_dictionary() {
+    // Common words with semantic relationships
+    const char* word_pairs[][2] = {
+        {"man", "woman"}, {"king", "queen"}, {"brother", "sister"},
+        {"boy", "girl"}, {"father", "mother"}, {"son", "daughter"},
+        {"he", "she"}, {"him", "her"}, {"uncle", "aunt"},
+        {"actor", "actress"}, {"waiter", "waitress"}, {"husband", "wife"}
+    };
     
-    // Seed random generator with hash for deterministic output
-    srand(hash);
+    // Common categories
+    const char* categories[][4] = {
+        {"red", "blue", "green", "yellow"},      // colors
+        {"dog", "cat", "bird", "fish"},          // animals
+        {"happy", "sad", "angry", "excited"},    // emotions
+        {"car", "bus", "train", "plane"},        // vehicles
+        {"north", "south", "east", "west"}       // directions
+    };
     
-    // Generate normalized embedding vector
-    float magnitude = 0.0f;
-    for (int i = 0; i < EMBEDDING_DIM; i++) {
-        embedding[i] = ((float)rand() / RAND_MAX) * 2.0f - 1.0f; // -1 to 1
-        magnitude += embedding[i] * embedding[i];
+    // Abstract concepts
+    const char* abstract_concepts[] = {
+        "time", "space", "love", "hate", "truth", "lie", "good", "bad", 
+        "beauty", "ugly", "knowledge", "ignorance", "hope", "despair"
+    };
+    
+    // Initialize base dictionary with random but consistent embeddings
+    int dict_index = 0;
+    
+    // Add gender pairs with related embeddings
+    for (int i = 0; i < 12 && dict_index < DICTIONARY_SIZE - 1; i++) {
+        // First word in pair
+        strncpy(semantic_dictionary[dict_index].word, word_pairs[i][0], MAX_WORD_LENGTH-1);
+        
+        // Generate base embedding deterministically
+        unsigned int seed = hash_string(word_pairs[i][0]);
+        srand(seed);
+        for (int j = 0; j < EMBEDDING_DIM; j++) {
+            semantic_dictionary[dict_index].embedding[j] = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+        }
+        
+        // Add related word information
+        strncpy(semantic_dictionary[dict_index].related_words[0], word_pairs[i][1], MAX_WORD_LENGTH-1);
+        
+        dict_index++;
+        
+        // Second word in pair (with relationship to first)
+        strncpy(semantic_dictionary[dict_index].word, word_pairs[i][1], MAX_WORD_LENGTH-1);
+        
+        // Create embedding based on first word - ensure they're related
+        // This simulates the king - man + woman = queen type relationships
+        for (int j = 0; j < EMBEDDING_DIM; j++) {
+            float random_offset = ((float)rand() / RAND_MAX) * 0.3f - 0.15f;
+            semantic_dictionary[dict_index].embedding[j] = semantic_dictionary[dict_index-1].embedding[j] + random_offset;
+        }
+        
+        // Add related word information
+        strncpy(semantic_dictionary[dict_index].related_words[0], word_pairs[i][0], MAX_WORD_LENGTH-1);
+        
+        dict_index++;
     }
     
-    // Normalize to unit length
-    magnitude = sqrtf(magnitude);
-    if (magnitude > 0.0001f) {
+    // Add category words with similar embeddings within category
+    for (int i = 0; i < 5 && dict_index < DICTIONARY_SIZE - 4; i++) {
+        float category_base[EMBEDDING_DIM] = {0};
+        
+        // Generate base vector for category
+        unsigned int seed = hash_string(categories[i][0]) ^ hash_string(categories[i][1]);
+        srand(seed);
+        for (int j = 0; j < EMBEDDING_DIM; j++) {
+            category_base[j] = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+        }
+        
+        // Create entries for each word in category with similar embeddings
+        for (int k = 0; k < 4 && dict_index < DICTIONARY_SIZE; k++) {
+            strncpy(semantic_dictionary[dict_index].word, categories[i][k], MAX_WORD_LENGTH-1);
+            
+            // Generate embedding with small deviation from category base
+            srand(hash_string(categories[i][k]));
+            for (int j = 0; j < EMBEDDING_DIM; j++) {
+                float random_offset = ((float)rand() / RAND_MAX) * 0.4f - 0.2f;
+                semantic_dictionary[dict_index].embedding[j] = category_base[j] + random_offset;
+            }
+            
+            // Store related words (others in category)
+            int rel_idx = 0;
+            for (int m = 0; m < 4; m++) {
+                if (m != k && rel_idx < 3) {
+                    strncpy(semantic_dictionary[dict_index].related_words[rel_idx], 
+                            categories[i][m], MAX_WORD_LENGTH-1);
+                    rel_idx++;
+                }
+            }
+            
+            dict_index++;
+        }
+    }
+    
+    // Normalize all embeddings to unit length
+    for (int i = 0; i < dict_index; i++) {
+        float magnitude = 0.0f;
+        for (int j = 0; j < EMBEDDING_DIM; j++) {
+            magnitude += semantic_dictionary[i].embedding[j] * semantic_dictionary[i].embedding[j];
+        }
+        
+        magnitude = sqrtf(magnitude);
+        if (magnitude > 0.0001f) {
+            for (int j = 0; j < EMBEDDING_DIM; j++) {
+                semantic_dictionary[i].embedding[j] /= magnitude;
+            }
+        }
+    }
+}
+
+// Find word in the semantic dictionary
+int find_in_dictionary(const char *word) {
+    for (int i = 0; i < DICTIONARY_SIZE; i++) {
+        if (strcmp(semantic_dictionary[i].word, word) == 0) {
+            return i;
+        }
+    }
+    return -1; // Not found
+}
+
+// Generate contextual embedding based on surrounding words
+void generate_contextual_embedding(const char *word, const char **context, int context_size, float *embedding) {
+    // Check if word is in dictionary
+    int word_idx = find_in_dictionary(word);
+    
+    if (word_idx >= 0) {
+        // Start with dictionary embedding
+        memcpy(embedding, semantic_dictionary[word_idx].embedding, EMBEDDING_DIM * sizeof(float));
+    } else {
+        // Generate deterministic but random embedding for unknown words
+        unsigned int seed = hash_string(word);
+        srand(seed);
+        
         for (int i = 0; i < EMBEDDING_DIM; i++) {
-            embedding[i] /= magnitude;
+            embedding[i] = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+        }
+    }
+    
+    // Influence embedding based on context (surrounding words)
+    if (context_size > 0) {
+        float context_influence = 0.2f; // How much context affects the embedding
+        
+        for (int i = 0; i < context_size; i++) {
+            int context_idx = find_in_dictionary(context[i]);
+            
+            if (context_idx >= 0) {
+                // Add weighted influence from dictionary words in context
+                for (int j = 0; j < EMBEDDING_DIM; j++) {
+                    embedding[j] += semantic_dictionary[context_idx].embedding[j] * 
+                                    context_influence / (float)context_size;
+                }
+            }
+        }
+        
+        // Re-normalize to unit length
+        float magnitude = 0.0f;
+        for (int i = 0; i < EMBEDDING_DIM; i++) {
+            magnitude += embedding[i] * embedding[i];
+        }
+        
+        magnitude = sqrtf(magnitude);
+        if (magnitude > 0.0001f) {
+            for (int i = 0; i < EMBEDDING_DIM; i++) {
+                embedding[i] /= magnitude;
+            }
         }
     }
 }
@@ -126,6 +292,21 @@ float cosine_similarity(const float *vec1, const float *vec2) {
     return dot_product / (magnitude1 * magnitude2);
 }
 
+// Generate word embedding considering semantic meaning and context
+void generate_word_embedding(const char *word, float *embedding, const char **context, int context_size) {
+    // Convert word to lowercase for better matching
+    char word_lower[MAX_WORD_LENGTH];
+    strncpy(word_lower, word, MAX_WORD_LENGTH - 1);
+    word_lower[MAX_WORD_LENGTH - 1] = '\0';
+    
+    for (int i = 0; word_lower[i]; i++) {
+        word_lower[i] = tolower(word_lower[i]);
+    }
+    
+    // Generate contextual embedding
+    generate_contextual_embedding(word_lower, context, context_size, embedding);
+}
+
 // Create embeddings from text and add them to the graph
 void create_text_embeddings(const char *text, Node **nodes, size_t *num_nodes, Link **links, size_t *num_links) {
     // Parse text into words
@@ -142,7 +323,16 @@ void create_text_embeddings(const char *text, Node **nodes, size_t *num_nodes, L
     while (token != NULL && word_count < MAX_WORDS) {
         // Skip empty tokens
         if (strlen(token) > 0) {
-            strncpy(words[word_count], token, MAX_WORD_LENGTH - 1);
+            // Convert to lowercase for better matching
+            char word_lower[MAX_WORD_LENGTH];
+            strncpy(word_lower, token, MAX_WORD_LENGTH - 1);
+            word_lower[MAX_WORD_LENGTH - 1] = '\0';
+            
+            for (int i = 0; word_lower[i]; i++) {
+                word_lower[i] = tolower(word_lower[i]);
+            }
+            
+            strncpy(words[word_count], word_lower, MAX_WORD_LENGTH - 1);
             words[word_count][MAX_WORD_LENGTH - 1] = '\0';
             word_count++;
         }
@@ -162,7 +352,7 @@ void create_text_embeddings(const char *text, Node **nodes, size_t *num_nodes, L
         return; // Memory allocation failed
     }
     
-    // Create embedding nodes
+    // Create embedding nodes with contextual information
     for (int i = 0; i < word_count; i++) {
         size_t node_idx = old_num_nodes + i;
         
@@ -179,8 +369,19 @@ void create_text_embeddings(const char *text, Node **nodes, size_t *num_nodes, L
         // Set name to the word
         strcpy((*nodes)[node_idx].name, words[i]);
         
-        // Generate embedding
-        generate_word_embedding(words[i], (*nodes)[node_idx].embedding);
+        // Create context window for this word
+        const char *context[CONTEXT_WINDOW * 2];
+        int context_size = 0;
+        
+        // Look at words before and after current word (within context window)
+        for (int j = i - CONTEXT_WINDOW; j <= i + CONTEXT_WINDOW; j++) {
+            if (j >= 0 && j < word_count && j != i) {
+                context[context_size++] = words[j];
+            }
+        }
+        
+        // Generate embedding with context
+        generate_word_embedding(words[i], (*nodes)[node_idx].embedding, context, context_size);
         (*nodes)[node_idx].is_embedding = 1;
     }
     
@@ -210,6 +411,55 @@ void create_text_embeddings(const char *text, Node **nodes, size_t *num_nodes, L
                 (*links)[link_idx].end_idx = old_num_nodes + j;
                 (*links)[link_idx].weight = similarity;
                 new_links++;
+            }
+            
+            // Always create links between semantically related words from the dictionary
+            else {
+                // Check if words have a semantic relationship in the dictionary
+                int idx1 = find_in_dictionary((*nodes)[old_num_nodes + i].name);
+                int idx2 = find_in_dictionary((*nodes)[old_num_nodes + j].name);
+                
+                bool is_related = false;
+                
+                // Check if either word lists the other as related
+                if (idx1 >= 0) {
+                    for (int k = 0; k < 3; k++) {
+                        if (semantic_dictionary[idx1].related_words[k][0] != '\0' && 
+                            strcmp(semantic_dictionary[idx1].related_words[k], 
+                                   (*nodes)[old_num_nodes + j].name) == 0) {
+                            is_related = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!is_related && idx2 >= 0) {
+                    for (int k = 0; k < 3; k++) {
+                        if (semantic_dictionary[idx2].related_words[k][0] != '\0' && 
+                            strcmp(semantic_dictionary[idx2].related_words[k], 
+                                   (*nodes)[old_num_nodes + i].name) == 0) {
+                            is_related = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // If they're related in the dictionary, connect them
+                if (is_related) {
+                    size_t link_idx = old_num_links + new_links;
+                    (*links)[link_idx].start_idx = old_num_nodes + i;
+                    (*links)[link_idx].end_idx = old_num_nodes + j;
+                    (*links)[link_idx].weight = 0.7f; // Strong weight for semantic pairs
+                    new_links++;
+                }
+                // Check if they belong to the same category using a lower similarity threshold
+                else if (similarity > 0.25f) {
+                    size_t link_idx = old_num_links + new_links;
+                    (*links)[link_idx].start_idx = old_num_nodes + i;
+                    (*links)[link_idx].end_idx = old_num_nodes + j;
+                    (*links)[link_idx].weight = similarity;
+                    new_links++;
+                }
             }
         }
     }
@@ -269,60 +519,6 @@ int AreNodesLinked(const Link *links, size_t num_links, unsigned int idx1, unsig
         }
     }
     return 0;
-}
-
-// Initializes graph nodes and reads links from the file
-void InitGraph(Node *nodes, const size_t num_nodes, Link *links, size_t *num_links_read, FILE *fp) {
-    char s[10];
-    unsigned int start_idx;
-    unsigned int end_idx;
-    size_t actual_links = 0;
-
-    // Initialize node positions and properties
-    for (size_t i = 0; i < num_nodes; i++) {
-        nodes[i].posx = (float)((rand() % (screenWidth - 200)) + 100); // Adjust initial position based on screen size
-        nodes[i].posy = (float)((rand() % (screenHeight - 200)) + 100);
-        nodes[i].velx = 0.0f;
-        nodes[i].vely = 0.0f;
-        nodes[i].accx = 0.0f;
-        nodes[i].accy = 0.0f;
-        nodes[i].forcex = 0.0f;
-        nodes[i].forcey = 0.0f;
-        snprintf(nodes[i].name, sizeof(nodes[i].name), "%u", (unsigned int)i);
-        nodes[i].is_embedding = 0; // Not an embedding node
-        
-        // Initialize embedding to zeros
-        for (int j = 0; j < EMBEDDING_DIM; j++) {
-            nodes[i].embedding[j] = 0.0f;
-        }
-    }
-
-    // Read links from the already open file pointer (fp)
-    // The first line (node count) was already read in main
-    while (fgets(s, sizeof(s), fp) != NULL) {
-        if (sscanf(s, "%u-%u", &start_idx, &end_idx) == 2) {
-            if (start_idx < num_nodes && end_idx < num_nodes && start_idx != end_idx) {
-                // Avoid adding duplicate links if file contains them
-                if (!AreNodesLinked(links, actual_links, start_idx, end_idx)) {
-                     if (actual_links < *num_links_read) { // Check we don't exceed allocated space
-                        links[actual_links].start_idx = start_idx;
-                        links[actual_links].end_idx = end_idx;
-                        links[actual_links].weight = 1.0f; // Default weight for regular links
-                        actual_links++;
-                     } else {
-                         fprintf(stderr, "Warning: More links in file than counted initially. Ignoring extra links.\n");
-                         break; // Stop reading links if array is full
-                     }
-                }
-            } else {
-                fprintf(stderr, "Warning: Invalid or self-referential link indices %u-%u in file.txt\n", start_idx, end_idx);
-            }
-        } else {
-            // Optional: Warn about lines that don't match the format
-            // fprintf(stderr, "Warning: Skipping malformed line in file.txt: %s", s);
-        }
-    }
-    *num_links_read = actual_links; // Update the count to the actual number read
 }
 
 // Main physics simulation step using Velocity Verlet integration
@@ -557,6 +753,7 @@ void RenderGraph(const Node *graph_nodes, const size_t num_nodes, const Link *li
     Color nodeOutlineColor = GRAY;
     Color lineColor = BLUE;
     Color embeddingLineColor = GREEN;
+    Color semanticLineColor = RED;     // For strongly related semantic words
     Color textColor = BLACK;
     int fontSize = 10; // Font size for node labels
 
@@ -574,12 +771,21 @@ void RenderGraph(const Node *graph_nodes, const size_t num_nodes, const Link *li
         // Use different color for embedding links
         Color currentLineColor = lineColor;
         if (graph_nodes[idx1].is_embedding && graph_nodes[idx2].is_embedding) {
-            // Adjust color alpha based on similarity
-            currentLineColor = embeddingLineColor;
-            
-            // Adjust line thickness based on similarity
-            float thickness = 1.0f + links[i].weight * 2.0f;
-            DrawLineEx(startPos, endPos, thickness, currentLineColor);
+            // Check if it's a strong semantic relationship
+            if (links[i].weight > 0.6f) {
+                currentLineColor = semanticLineColor;
+                DrawLineEx(startPos, endPos, 2.0f + links[i].weight * 1.5f, currentLineColor);
+            } else {
+                // Adjust color based on similarity
+                currentLineColor = embeddingLineColor;
+                float alpha = 150 + (links[i].weight * 100); // Transparency based on strength
+                if (alpha > 255) alpha = 255;
+                currentLineColor.a = (unsigned char)alpha;
+                
+                // Adjust line thickness based on similarity
+                float thickness = 0.5f + links[i].weight * 3.0f;
+                DrawLineEx(startPos, endPos, thickness, currentLineColor);
+            }
         } else {
             DrawLineV(startPos, endPos, currentLineColor);
         }
@@ -591,11 +797,22 @@ void RenderGraph(const Node *graph_nodes, const size_t num_nodes, const Link *li
         Vector2 center = { graph_nodes[i].posx, graph_nodes[i].posy };
         
         // Use different color for embedding nodes
-        Color currentNodeColor = graph_nodes[i].is_embedding ? embeddingNodeColor : nodeColor;
+        Color currentNodeColor = nodeColor;
+        float scale = 1.0f;
+        
+        if (graph_nodes[i].is_embedding) {
+            // Check if it's a dictionary word
+            if (find_in_dictionary(graph_nodes[i].name) >= 0) {
+                currentNodeColor = RED;   // Dictionary words highlighted
+                scale = 1.2f;             // Slightly larger
+            } else {
+                currentNodeColor = embeddingNodeColor;
+            }
+        }
 
         // Draw circle outline first then filled circle
-        DrawCircleV(center, node_radius + 1, nodeOutlineColor); // Slightly larger for outline
-        DrawCircleV(center, node_radius, currentNodeColor);
+        DrawCircleV(center, node_radius * scale + 1, nodeOutlineColor); // Slightly larger for outline
+        DrawCircleV(center, node_radius * scale, currentNodeColor);
 
         // Draw text (centered on node)
         // Measure text to center it
@@ -606,6 +823,9 @@ void RenderGraph(const Node *graph_nodes, const size_t num_nodes, const Link *li
         };
         DrawText(graph_nodes[i].name, (int)textPos.x, (int)textPos.y, fontSize, textColor);
     }
+
+    // Display dictionary info
+    DrawText("Dictionary-based semantic embeddings active", 10, screenHeight - 30, 15, GREEN);
 
     EndDrawing();
 }
@@ -705,79 +925,23 @@ bool HandleTextInput(TextInputState *state, Node **nodes, size_t *num_nodes, Lin
 }
 
 int main(int argc, char *argv[]) {
-    FILE *fp = NULL;
+    // Initialize with no nodes or links
     size_t num_nodes = 0;
-    size_t num_links_alloc = 0;
-    size_t num_links_actual = 0;
-    char s[20];
-    char *filename = "file.txt"; // Default filename
-
-    // Check if a filename was provided as command-line argument
-    if (argc > 1) {
-        filename = argv[1];
+    size_t num_links = 0;
+    
+    // Allocate initial empty arrays
+    Node *nodes = malloc(sizeof(Node) * 1); // Start with space for at least 1 node
+    Link *links = malloc(sizeof(Link) * 1); // Start with space for at least 1 link
+    
+    if (nodes == NULL || links == NULL) {
+        fprintf(stderr, "Failed to allocate initial memory\n");
+        if (nodes) free(nodes);
+        if (links) free(links);
+        return EXIT_FAILURE;
     }
 
     // Seed random number generator
-    srand((unsigned int)time(NULL)); // Requires #include <time.h>
-
-    // --- File Reading and Graph Initialization ---
-    fp = fopen(filename, "r");
-    if (fp == NULL) {
-        fprintf(stderr, "Error opening file: %s\n", filename);
-        return EXIT_FAILURE;
-    }
-
-    // Read number of nodes directly into size_t using %zu
-    if (fgets(s, sizeof(s), fp) == NULL || sscanf(s, "%zu", &num_nodes) != 1 || num_nodes == 0 || num_nodes > 10000) { // Use %zu and read directly into num_nodes
-        fprintf(stderr, "Error reading a valid number of nodes (1-10000) from %s\n", filename);
-        fclose(fp);
-        return EXIT_FAILURE;
-    }
-
-    // Count number of potential links lines for allocation
-    while (fgets(s, sizeof(s), fp) != NULL) {
-        if (strchr(s, '-')) { // Simple check for a potential link line
-            num_links_alloc++;
-        }
-    }
-     if (num_links_alloc == 0) {
-        fprintf(stderr,"Warning: No link lines found in %s\n", filename);
-     }
-
-    rewind(fp);             // Go back to the beginning
-    fgets(s, sizeof(s), fp); // Skip the first line (number of nodes) again
-
-    // Allocate memory
-    Node *nodes = malloc(sizeof(Node) * num_nodes);
-    if (nodes == NULL) {
-        perror("Failed to allocate memory for nodes");
-        fclose(fp);
-        return EXIT_FAILURE;
-    }
-    // Allocate based on counted lines, even if some might be invalid
-    Link *links = NULL;
-     if (num_links_alloc > 0) {
-        links = malloc(sizeof(Link) * num_links_alloc);
-         if (links == NULL) {
-            perror("Failed to allocate memory for links");
-            free(nodes);
-            fclose(fp);
-            return EXIT_FAILURE;
-        }
-     } else {
-         links = NULL; // No links to allocate
-     }
-
-
-    // Initialize graph (reads links and updates num_links_actual)
-    num_links_actual = num_links_alloc; // Pass the allocated size
-    InitGraph(nodes, num_nodes, links, &num_links_actual, fp);
-    fclose(fp); // Close file after InitGraph finishes reading it
-
-     if (num_links_actual != num_links_alloc) {
-         fprintf(stderr, "Info: Allocated for %zu links, but read %zu valid links.\n", num_links_alloc, num_links_actual);
-         // Optional: realloc 'links' to 'num_links_actual' if memory is critical
-     }
+    srand((unsigned int)time(NULL));
 
     // Initialize text input state
     TextInputState input_state = {
@@ -785,41 +949,65 @@ int main(int argc, char *argv[]) {
         .is_editing = false,
         .visualization_active = false
     };
+    
+    // Initialize semantic dictionary
+    initialize_semantic_dictionary();
 
     // --- Raylib Setup ---
     char window_title[100];
-    snprintf(window_title, sizeof(window_title), "Graph with Text Embeddings - %s", filename);
+    snprintf(window_title, sizeof(window_title), "Semantic Embedding Visualization");
     InitWindow(screenWidth, screenHeight, window_title);
     SetTargetFPS(60); // Set desired frame rate
 
     // --- Main Loop ---
-    // Use Raylib's WindowShouldClose() function
     while (!WindowShouldClose()) {
         // Handle text input and embeddings creation
-        if (HandleTextInput(&input_state, &nodes, &num_nodes, &links, &num_links_actual)) {
+        if (HandleTextInput(&input_state, &nodes, &num_nodes, &links, &num_links)) {
             // Reset simulation temperature when new embeddings are added
             // This is done implicitly in UpdateSimulation as it uses a static temperature
         }
         
-        // Simulation step
-        UpdateSimulation(nodes, num_nodes, links, num_links_actual);
+        // Only run simulation and render if we have nodes
+        if (num_nodes > 0) {
+            // Simulation step
+            UpdateSimulation(nodes, num_nodes, links, num_links);
 
-        // Rendering step
-        RenderGraph(nodes, num_nodes, links, num_links_actual);
+            // Rendering step
+            RenderGraph(nodes, num_nodes, links, num_links);
+        } else {
+            // Display welcome screen if no nodes
+            BeginDrawing();
+            ClearBackground(BLACK);
+            DrawText("Semantic Embedding Visualization", screenWidth / 2 - 200, screenHeight / 2 - 100, 20, WHITE);
+            DrawText("Press 'T' to enter text for visualizing word embeddings", screenWidth / 2 - 250, screenHeight / 2 - 50, 20, WHITE);
+            DrawText("Example: \"The king and queen met with the man and woman\"", screenWidth / 2 - 270, screenHeight / 2, 20, GREEN);
+            DrawText("Example: \"Red blue green yellow are colors\"", screenWidth / 2 - 200, screenHeight / 2 + 30, 20, GREEN);
+            DrawText("Example: \"Dogs cats birds and fish are animals\"", screenWidth / 2 - 220, screenHeight / 2 + 60, 20, GREEN);
+            EndDrawing();
+        }
         
         // Render text input UI if active
         RenderTextInput(&input_state);
         
         // Display help text
-        if (!input_state.is_editing) {
-            DrawText("Press 'T' to enter text for embedding visualization", 10, 10, 20, WHITE);
+        if (!input_state.is_editing && num_nodes > 0) {
+            DrawText("Press 'T' to enter more text for visualization", 10, 10, 20, WHITE);
+            DrawText("Press 'R' to reset and clear all nodes", 10, 40, 20, WHITE);
+        }
+        
+        // Check for reset command
+        if (IsKeyPressed(KEY_R)) {
+            // Clear all nodes and links
+            num_nodes = 0;
+            num_links = 0;
+            // Keep allocated memory but reset the count
         }
     }
 
     // --- Cleanup ---
     CloseWindow(); // Close Raylib window and OpenGL context
     free(nodes);
-    if (links) free(links); // Free links only if allocated
+    free(links);
 
     return EXIT_SUCCESS;
 } 
